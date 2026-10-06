@@ -122,4 +122,260 @@ class _VotolHomePageState extends State<VotolHomePage> {
   final List<int> _buffer = [];
 
   int _findFrameStart(List<int> buf) {
-    for (var i = 0; i
+    for (var i = 0; i < buf.length - 1; i++) {
+      if (buf[i] == 0xc0 && buf[i + 1] == 0x14) return i;
+    }
+    return -1;
+  }
+
+  bool _checkChecksum(Uint8List frame) {
+    int xorSum = 0;
+    for (var i = 0; i < 22; i++) {
+      xorSum ^= frame[i];
+    }
+    return xorSum == frame[22];
+  }
+
+  Future<void> _readOnce() async {
+    if (_port == null) return;
+    await _port!.write(readCommand);
+  }
+
+  void _togglePolling() {
+    if (_polling) {
+      _pollTimer?.cancel();
+      setState(() => _polling = false);
+    } else {
+      _pollTimer = Timer.periodic(const Duration(seconds: 1), (_) => _readOnce());
+      setState(() => _polling = true);
+    }
+  }
+
+  Future<void> _disconnect() async {
+    _pollTimer?.cancel();
+    await _subscription?.cancel();
+    await _transaction?.dispose();
+    await _port?.close();
+    setState(() {
+      _connected = false;
+      _polling = false;
+      _port = null;
+      _status = 'Desconectado.';
+    });
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    _subscription?.cancel();
+    _transaction?.dispose();
+    _port?.close();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('VotolConfig — Fase 1'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _refreshDevices,
+            tooltip: 'Buscar cable',
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(_status, style: const TextStyle(color: Colors.grey)),
+            const SizedBox(height: 16),
+            if (!_connected) ...[
+              const Text('Dispositivos USB detectados:', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              if (_devices.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24),
+                  child: Text('Ninguno. Conecta el cable del Votol y toca el ícono de recargar arriba.'),
+                ),
+              ..._devices.map((d) => Card(
+                    child: ListTile(
+                      title: Text(d.productName ?? 'Dispositivo USB'),
+                      subtitle: Text('VID: ${d.vid}  PID: ${d.pid}'),
+                      trailing: ElevatedButton(
+                        onPressed: () => _connect(d),
+                        child: const Text('Conectar'),
+                      ),
+                    ),
+                  )),
+            ] else ...[
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _readOnce,
+                      icon: const Icon(Icons.download),
+                      label: const Text('Leer datos'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _togglePolling,
+                      icon: Icon(_polling ? Icons.pause : Icons.play_arrow),
+                      label: Text(_polling ? 'Detener auto' : 'Auto cada 1s'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              TextButton(onPressed: _disconnect, child: const Text('Desconectar')),
+              const Divider(height: 32),
+              if (_lastReading != null) _ReadingView(reading: _lastReading!, checksumOk: _lastChecksumOk),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Representa una lectura decodificada del frame de 24 bytes, según el
+/// protocolo documentado por la comunidad (no todos los bytes están
+/// descifrados todavía — ver notas en el README del proyecto).
+class VotolReading {
+  final double batteryVoltage;
+  final double batteryCurrent;
+  final int rpm;
+  final int controllerTempC;
+  final int externalTempC;
+  final int tempCoefficient;
+  final int faultCode;
+  final int gearRaw;
+  final String gearLabel;
+  final bool reverse;
+  final bool park;
+  final bool brake;
+  final bool antitheft;
+  final bool sideStand;
+  final bool regen;
+  final int statusRaw;
+  final String statusLabel;
+  final List<int> rawBytes;
+
+  VotolReading({
+    required this.batteryVoltage,
+    required this.batteryCurrent,
+    required this.rpm,
+    required this.controllerTempC,
+    required this.externalTempC,
+    required this.tempCoefficient,
+    required this.faultCode,
+    required this.gearRaw,
+    required this.gearLabel,
+    required this.reverse,
+    required this.park,
+    required this.brake,
+    required this.antitheft,
+    required this.sideStand,
+    required this.regen,
+    required this.statusRaw,
+    required this.statusLabel,
+    required this.rawBytes,
+  });
+
+  factory VotolReading.fromFrame(Uint8List f) {
+    int u16(int hi, int lo) => (f[hi] << 8) | f[lo];
+    final voltage = u16(5, 6) / 10.0;
+    final current = u16(7, 8) / 10.0;
+    final rpm = u16(14, 15);
+    final controllerTemp = f[16] - 50;
+    final externalTemp = f[17] - 50;
+    final tempCoef = u16(18, 19);
+    final fault = (f[10] << 24) | (f[11] << 16) | (f[12] << 8) | f[13];
+    final b20 = f[20];
+    final gearRaw = b20 & 0x03;
+    const gearLabels = ['L', 'M', 'H', 'S'];
+    final status = f[21];
+    const statusLabels = ['IDLE', 'INIT', 'START', 'RUN', 'STOP', 'BRAKE', 'WAIT', 'FAULT'];
+
+    return VotolReading(
+      batteryVoltage: voltage,
+      batteryCurrent: current,
+      rpm: rpm,
+      controllerTempC: controllerTemp,
+      externalTempC: externalTemp,
+      tempCoefficient: tempCoef,
+      faultCode: fault,
+      gearRaw: gearRaw,
+      gearLabel: gearLabels[gearRaw],
+      reverse: (b20 & 0x04) != 0,
+      park: (b20 & 0x08) != 0,
+      brake: (b20 & 0x10) != 0,
+      antitheft: (b20 & 0x20) != 0,
+      sideStand: (b20 & 0x40) != 0,
+      regen: (b20 & 0x80) != 0,
+      statusRaw: status,
+      statusLabel: status < statusLabels.length ? statusLabels[status] : 'DESCONOCIDO ($status)',
+      rawBytes: f,
+    );
+  }
+}
+
+class _ReadingView extends StatelessWidget {
+  final VotolReading reading;
+  final bool checksumOk;
+  const _ReadingView({required this.reading, required this.checksumOk});
+
+  @override
+  Widget build(BuildContext context) {
+    final rows = <MapEntry<String, String>>[
+      MapEntry('Voltaje batería', '${reading.batteryVoltage.toStringAsFixed(1)} V'),
+      MapEntry('Corriente batería', '${reading.batteryCurrent.toStringAsFixed(1)} A'),
+      MapEntry('RPM', '${reading.rpm}'),
+      MapEntry('Temp. controlador', '${reading.controllerTempC} °C'),
+      MapEntry('Temp. externa', '${reading.externalTempC} °C'),
+      MapEntry('Coeficiente temp.', '${reading.tempCoefficient}'),
+      MapEntry('Código de falla', '0x${reading.faultCode.toRadixString(16).padLeft(8, '0')}'),
+      MapEntry('Marcha', reading.gearLabel),
+      MapEntry('Reversa', reading.reverse ? 'Sí' : 'No'),
+      MapEntry('Parking', reading.park ? 'Sí' : 'No'),
+      MapEntry('Freno', reading.brake ? 'Sí' : 'No'),
+      MapEntry('Antirrobo', reading.antitheft ? 'Sí' : 'No'),
+      MapEntry('Caballete lateral', reading.sideStand ? 'Sí' : 'No'),
+      MapEntry('Regenerativa', reading.regen ? 'Sí' : 'No'),
+      MapEntry('Estado', reading.statusLabel),
+    ];
+
+    return Expanded(
+      child: ListView(
+        children: [
+          if (!checksumOk)
+            Container(
+              padding: const EdgeInsets.all(8),
+              margin: const EdgeInsets.only(bottom: 8),
+              color: Colors.red.withOpacity(0.2),
+              child: const Text(
+                '⚠ El checksum de este paquete no coincide. Puede ser ruido en la línea — vuelve a leer.',
+                style: TextStyle(color: Colors.redAccent),
+              ),
+            ),
+          ...rows.map((r) => Card(
+                child: ListTile(
+                  title: Text(r.key),
+                  trailing: Text(r.value, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                ),
+              )),
+          const SizedBox(height: 16),
+          Text(
+            'Bytes crudos: ${reading.rawBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}',
+            style: const TextStyle(fontSize: 11, color: Colors.grey, fontFamily: 'monospace'),
+          ),
+        ],
+      ),
+    );
+  }
+}
