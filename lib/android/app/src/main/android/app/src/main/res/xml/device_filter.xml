@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Prolific PL2303 (chip del cable oficial de Votol) -->
+    <usb-device vendor-id="1659" product-id="8963" />
+    <!-- Algunos cables PL2303 clonados usan estos otros IDs; se incluyen por si acaso -->
+    <usb-device vendor-id="1659" product-id="2" />
+    <!-- CH340 (otro chip común en cables económicos, por si el tuyo es un clon) -->
+    <usb-device vendor-id="6790" product-id="29987" />
+    <!-- CP210x (otro chip común) -->
+    <usb-device vendor-id="4292" product-id="60000" />
+</resources>
