@@ -170,6 +170,8 @@ class _VotolHomePageState extends State<VotolHomePage> {
       final checksumOk = _checkChecksum(frame);
       if (!checksumOk) {
         setState(() {
+          // Do not leave a previous valid reading on screen as if it were current.
+          _lastReading = null;
           _lastChecksumOk = false;
           _status = 'Respuesta recibida, pero el checksum no coincide. No se muestran valores dudosos.';
         });
