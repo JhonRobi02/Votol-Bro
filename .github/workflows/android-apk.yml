@@ -21,8 +21,7 @@ jobs:
           channel: stable
           cache: true
 
-      # The repository currently contains a malformed, partial Android tree.
-      # Regenerate the platform from scratch so Flutter does not preserve it.
+      # Regenerate the incomplete Android platform tree before building.
       - name: Regenerate clean Android platform
         run: |
           rm -rf android
@@ -44,14 +43,14 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      # usb_serial 0.5.2 still references JCenter, which is no longer supported
-      # by the current Gradle runtime. Replace it with Maven Central in the
-      # downloaded dependency before Gradle evaluates the plugin.
+      # usb_serial 0.5.2 targets API 33 and needs a newer compile SDK
+      # because its AndroidX dependencies require API 34 or later.
       - name: Patch legacy USB serial Android build configuration
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import glob
+          import re
 
           matches = glob.glob(str(Path.home() / ".pub-cache/hosted/pub.dev/usb_serial-*/android/build.gradle"))
           if not matches:
@@ -60,15 +59,18 @@ jobs:
               path = Path(name)
               content = path.read_text()
               content = content.replace("jcenter()", "mavenCentral()")
+              content = re.sub(r"compileSdkVersion\s+33", "compileSdkVersion 36", content)
+              content = re.sub(r"compileSdk\s*=\s*33", "compileSdk = 36", content)
               path.write_text(content)
+              if "compileSdkVersion 36" not in content and "compileSdk = 36" not in content:
+                  raise SystemExit(f"No se pudo actualizar compileSdk en {path}")
 
           gradle_props = Path("android/gradle.properties")
           props = gradle_props.read_text()
           if "android.newDsl=" not in props:
-              props += "\\n# Keep compatibility with the Flutter Gradle plugin while AGP 9 is used\\nandroid.newDsl=false\\n"
+              props += "\n# Keep compatibility with Flutter Gradle plugin\nandroid.newDsl=false\n"
           else:
-              import re
-              props = re.sub(r"(?m)^android\\.newDsl=.*$", "android.newDsl=false", props)
+              props = re.sub(r"(?m)^android\.newDsl=.*$", "android.newDsl=false", props)
           gradle_props.write_text(props)
           PY
 
