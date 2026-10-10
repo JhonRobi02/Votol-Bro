@@ -41,9 +41,12 @@ class VotolHomePage extends StatefulWidget {
 class _VotolHomePageState extends State<VotolHomePage> {
   // Comando exacto de lectura, documentado por la comunidad (foro endless-sphere,
   // hilo "VOTOL serial communication protocol"). No se debe modificar a mano.
+  // Paquete SHOW de lectura de telemetría de 24 bytes documentado en
+  // la referencia comunitaria bananu7/votol (reference/raw_notes.md).
+  // Se usa la variante de lectura con longitud 0x18 y checksum 0xC4.
   static final Uint8List readCommand = Uint8List.fromList([
     0xc9, 0x14, 0x02, 0x53, 0x48, 0x4f, 0x57, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0xaa, 0x00, 0x00, 0x00, 0x1e, 0xaa, 0x04, 0x67, 0x00, 0xf3, 0x52, 0x0d
+    0xaa, 0x00, 0x00, 0x00, 0x18, 0xaa, 0x00, 0x00, 0x00, 0x00, 0xc4, 0x0d
   ]);
 
   List<UsbDevice> _devices = [];
@@ -64,59 +67,122 @@ class _VotolHomePageState extends State<VotolHomePage> {
   }
 
   Future<void> _refreshDevices() async {
-    final devices = await UsbSerial.listDevices();
-    setState(() => _devices = devices);
+    try {
+      final devices = await UsbSerial.listDevices();
+      if (!mounted) return;
+      setState(() {
+        _devices = devices;
+        _status = devices.isEmpty
+            ? 'No se detecta ningún USB. Comprueba el adaptador OTG y vuelve a buscar.'
+            : 'Se detectaron ${devices.length} dispositivo(s) USB.';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _status = 'Error buscando USB: $e');
+    }
   }
 
   Future<void> _connect(UsbDevice device) async {
-    setState(() => _status = 'Conectando…');
-    final port = await device.create();
-    if (port == null || !(await port.open())) {
-      setState(() => _status = 'No se pudo abrir el puerto. ¿Permiso USB concedido?');
-      return;
+    if (!mounted) return;
+    setState(() => _status = 'Solicitando permiso y conectando al USB…');
+    UsbPort? port;
+    try {
+      port = await device.create();
+      if (port == null) {
+        throw Exception('El dispositivo no creó un puerto USB.');
+      }
+      final opened = await port.open();
+      if (!opened) {
+        throw Exception('No se pudo abrir el puerto USB. Comprueba el permiso OTG.');
+      }
+      await port.setPortParameters(
+        9600,
+        UsbPort.DATABITS_8,
+        UsbPort.STOPBITS_1,
+        UsbPort.PARITY_NONE,
+      );
+      await port.setDTR(true);
+      await port.setRTS(true);
+
+      final input = port.inputStream;
+      if (input == null) {
+        throw Exception('El puerto abrió, pero no ofrece un flujo de lectura.');
+      }
+
+      _port = port;
+      _buffer.clear();
+      _transaction = Transaction.createStreamTransaction(input, Uint8List.fromList);
+      _subscription = _transaction!.stream.listen(
+        _handleIncoming,
+        onError: (Object error) {
+          if (mounted) setState(() => _status = 'Error leyendo USB: $error');
+        },
+        onDone: () {
+          if (mounted && _connected) {
+            setState(() => _status = 'El flujo USB se cerró. Desconecta y vuelve a conectar.');
+          }
+        },
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _connected = true;
+        _status = 'Conectado a ${device.productName ?? "dispositivo USB"}. Toca “Leer datos”.';
+      });
+    } catch (e) {
+      try { await port?.close(); } catch (_) {}
+      if (!mounted) return;
+      setState(() {
+        _connected = false;
+        _port = null;
+        _status = 'No se pudo conectar: $e';
+      });
     }
-    await port.setDTR(true);
-    await port.setRTS(true);
-    await port.setPortParameters(
-      9600,
-      UsbPort.DATABITS_8,
-      UsbPort.STOPBITS_1,
-      UsbPort.PARITY_NONE,
-    );
-
-    _port = port;
-    _transaction = Transaction.createStreamTransaction(port.inputStream!, Uint8List.fromList);
-    _subscription = _transaction!.stream.listen(_handleIncoming);
-
-    setState(() {
-      _connected = true;
-      _status = 'Conectado. Toca "Leer datos" para pedir una lectura.';
-    });
   }
 
   void _handleIncoming(Uint8List data) {
-    // El controlador puede mandar los 24 bytes partidos en varios paquetes;
-    // los vamos juntando hasta tener el frame completo que empieza con c0 14.
+    // Las respuestas pueden llegar fragmentadas o varias juntas. El frame de
+    // telemetría tiene 24 bytes: C0 14 ... XOR ... 0D.
+    if (!mounted) return;
     _buffer.addAll(data);
-    final start = _findFrameStart(_buffer);
-    if (start == -1) {
-      if (_buffer.length > 200) _buffer.clear();
-      return;
+
+    while (_buffer.length >= 24) {
+      final start = _findFrameStart(_buffer);
+      if (start == -1) {
+        // Conserva un posible primer byte de cabecera partido entre paquetes.
+        final keepLastByte = _buffer.isNotEmpty && _buffer.last == 0xc0;
+        final last = keepLastByte ? _buffer.last : null;
+        _buffer.clear();
+        if (last != null) _buffer.add(last);
+        return;
+      }
+      if (start > 0) _buffer.removeRange(0, start);
+      if (_buffer.length < 24) return;
+
+      final frame = Uint8List.fromList(_buffer.sublist(0, 24));
+      if (frame[23] != 0x0d) {
+        // Cabecera falsa o datos corruptos: desplaza un byte y vuelve a buscar.
+        _buffer.removeAt(0);
+        continue;
+      }
+
+      _buffer.removeRange(0, 24);
+      final checksumOk = _checkChecksum(frame);
+      if (!checksumOk) {
+        setState(() {
+          _lastChecksumOk = false;
+          _status = 'Respuesta recibida, pero el checksum no coincide. No se muestran valores dudosos.';
+        });
+        continue;
+      }
+
+      final reading = VotolReading.fromFrame(frame);
+      setState(() {
+        _lastReading = reading;
+        _lastChecksumOk = true;
+        _status = 'Última lectura válida recibida.';
+      });
     }
-    if (_buffer.length - start < 24) return;
-
-    final frame = Uint8List.fromList(_buffer.sublist(start, start + 24));
-    _buffer.removeRange(0, start + 24);
-
-    final reading = VotolReading.fromFrame(frame);
-    final checksumOk = _checkChecksum(frame);
-    setState(() {
-      _lastReading = reading;
-      _lastChecksumOk = checksumOk;
-      _status = checksumOk
-          ? 'Última lectura OK.'
-          : 'Lectura recibida, pero el checksum no coincide — tómala con cuidado.';
-    });
   }
 
   final List<int> _buffer = [];
@@ -129,6 +195,9 @@ class _VotolHomePageState extends State<VotolHomePage> {
   }
 
   bool _checkChecksum(Uint8List frame) {
+    if (frame.length != 24 || frame[0] != 0xc0 || frame[1] != 0x14 || frame[23] != 0x0d) {
+      return false;
+    }
     int xorSum = 0;
     for (var i = 0; i < 22; i++) {
       xorSum ^= frame[i];
@@ -137,15 +206,24 @@ class _VotolHomePageState extends State<VotolHomePage> {
   }
 
   Future<void> _readOnce() async {
-    if (_port == null) return;
-    await _port!.write(readCommand);
+    final port = _port;
+    if (port == null || !_connected) return;
+    try {
+      await port.write(readCommand);
+      if (mounted) setState(() => _status = 'Solicitud enviada; esperando respuesta del controlador…');
+    } catch (e) {
+      if (mounted) setState(() => _status = 'No se pudo enviar la solicitud USB: $e');
+    }
   }
 
   void _togglePolling() {
     if (_polling) {
       _pollTimer?.cancel();
+      _pollTimer = null;
       setState(() => _polling = false);
     } else {
+      // Envía una petición inmediatamente y luego consulta cada segundo.
+      _readOnce();
       _pollTimer = Timer.periodic(const Duration(seconds: 1), (_) => _readOnce());
       setState(() => _polling = true);
     }
@@ -153,13 +231,19 @@ class _VotolHomePageState extends State<VotolHomePage> {
 
   Future<void> _disconnect() async {
     _pollTimer?.cancel();
-    await _subscription?.cancel();
-    await _transaction?.dispose();
-    await _port?.close();
+    _pollTimer = null;
+    try { await _subscription?.cancel(); } catch (_) {}
+    try { await _transaction?.dispose(); } catch (_) {}
+    try { await _port?.close(); } catch (_) {}
+    _subscription = null;
+    _transaction = null;
+    _buffer.clear();
+    if (!mounted) return;
     setState(() {
       _connected = false;
       _polling = false;
       _port = null;
+      _lastReading = null;
       _status = 'Desconectado.';
     });
   }
