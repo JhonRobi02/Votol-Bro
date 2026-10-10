@@ -28,6 +28,25 @@ jobs:
           rm -rf lib/android
           flutter create --platforms=android --project-name votol_config --org com.jhonrobi.votol .
 
+      - name: Generate Votol Bros launcher icons
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y librsvg2-bin
+          mkdir -p android/app/src/main/res/mipmap-mdpi android/app/src/main/res/mipmap-hdpi android/app/src/main/res/mipmap-xhdpi android/app/src/main/res/mipmap-xxhdpi android/app/src/main/res/mipmap-xxxhdpi
+          rsvg-convert -w 48 -h 48 assets/votol_bros_logo.svg -o android/app/src/main/res/mipmap-mdpi/ic_launcher.png
+          rsvg-convert -w 72 -h 72 assets/votol_bros_logo.svg -o android/app/src/main/res/mipmap-hdpi/ic_launcher.png
+          rsvg-convert -w 96 -h 96 assets/votol_bros_logo.svg -o android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          rsvg-convert -w 144 -h 144 assets/votol_bros_logo.svg -o android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          rsvg-convert -w 192 -h 192 assets/votol_bros_logo.svg -o android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("android/app/src/main/AndroidManifest.xml")
+          s = p.read_text()
+          s = s.replace('android:label="votol_config"', 'android:label="Votol Bros"')
+          s = s.replace('android:label="votol_config"', 'android:label="Votol Bros"')
+          p.write_text(s)
+          PY
+
       - name: Enable Android USB host support
         run: |
           python3 - <<'PY'
