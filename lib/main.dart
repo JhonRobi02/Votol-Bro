@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:usb_serial/usb_serial.dart';
-import 'package:usb_serial/transaction.dart';
 
 void main() {
   runApp(const VotolApp());
@@ -51,7 +50,6 @@ class _VotolHomePageState extends State<VotolHomePage> {
 
   List<UsbDevice> _devices = [];
   UsbPort? _port;
-  Transaction<Uint8List>? _transaction;
   StreamSubscription<Uint8List>? _subscription;
   bool _connected = false;
   bool _polling = false;
@@ -111,8 +109,7 @@ class _VotolHomePageState extends State<VotolHomePage> {
 
       _port = port;
       _buffer.clear();
-      _transaction = Transaction.createStreamTransaction(input, Uint8List.fromList);
-      _subscription = _transaction!.stream.listen(
+      _subscription = input.listen(
         _handleIncoming,
         onError: (Object error) {
           if (mounted) setState(() => _status = 'Error leyendo USB: $error');
@@ -211,7 +208,7 @@ class _VotolHomePageState extends State<VotolHomePage> {
     final port = _port;
     if (port == null || !_connected) return;
     try {
-      await port.write(readCommand);
+      port.write(readCommand);
       if (mounted) setState(() => _status = 'Solicitud enviada; esperando respuesta del controlador…');
     } catch (e) {
       if (mounted) setState(() => _status = 'No se pudo enviar la solicitud USB: $e');
@@ -235,10 +232,8 @@ class _VotolHomePageState extends State<VotolHomePage> {
     _pollTimer?.cancel();
     _pollTimer = null;
     try { await _subscription?.cancel(); } catch (_) {}
-    try { await _transaction?.dispose(); } catch (_) {}
     try { await _port?.close(); } catch (_) {}
     _subscription = null;
-    _transaction = null;
     _buffer.clear();
     if (!mounted) return;
     setState(() {
@@ -254,7 +249,6 @@ class _VotolHomePageState extends State<VotolHomePage> {
   void dispose() {
     _pollTimer?.cancel();
     _subscription?.cancel();
-    _transaction?.dispose();
     _port?.close();
     super.dispose();
   }
@@ -443,7 +437,7 @@ class _ReadingView extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(8),
               margin: const EdgeInsets.only(bottom: 8),
-              color: Colors.red.withOpacity(0.2),
+              color: Colors.red.withValues(alpha: 0.2),
               child: const Text(
                 '⚠ El checksum de este paquete no coincide. Puede ser ruido en la línea — vuelve a leer.',
                 style: TextStyle(color: Colors.redAccent),
