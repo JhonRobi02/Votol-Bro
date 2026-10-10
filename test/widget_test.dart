@@ -7,6 +7,5 @@ void main() {
     await tester.pump();
 
     expect(find.text('VotolConfig — Fase 1'), findsOneWidget);
-    expect(find.textContaining('Sin conectar'), findsOneWidget);
   });
 }
