@@ -44,6 +44,34 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      # usb_serial 0.5.2 still references JCenter, which is no longer supported
+      # by the current Gradle runtime. Replace it with Maven Central in the
+      # downloaded dependency before Gradle evaluates the plugin.
+      - name: Patch legacy USB serial Android build configuration
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import glob
+
+          matches = glob.glob(str(Path.home() / ".pub-cache/hosted/pub.dev/usb_serial-*/android/build.gradle"))
+          if not matches:
+              raise SystemExit("No se encontró el build.gradle de usb_serial en la caché de Pub")
+          for name in matches:
+              path = Path(name)
+              content = path.read_text()
+              content = content.replace("jcenter()", "mavenCentral()")
+              path.write_text(content)
+
+          gradle_props = Path("android/gradle.properties")
+          props = gradle_props.read_text()
+          if "android.newDsl=" not in props:
+              props += "\\n# Keep compatibility with the Flutter Gradle plugin while AGP 9 is used\\nandroid.newDsl=false\\n"
+          else:
+              import re
+              props = re.sub(r"(?m)^android\\.newDsl=.*$", "android.newDsl=false", props)
+          gradle_props.write_text(props)
+          PY
+
       - name: Analyze Dart code
         run: flutter analyze
 
