@@ -13,14 +13,14 @@ class VotolApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'VotolConfig',
+      title: 'Votol Bros',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
-        primaryColor: const Color(0xFF34C759),
+        primaryColor: const Color(0xFFFFD21A),
         scaffoldBackgroundColor: const Color(0xFF0E0E10),
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF34C759),
+          seedColor: const Color(0xFFFFD21A),
           brightness: Brightness.dark,
         ),
         useMaterial3: true,
@@ -257,7 +257,7 @@ class _VotolHomePageState extends State<VotolHomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('VotolConfig — Fase 1'),
+        title: const Text('Votol Bros'),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
