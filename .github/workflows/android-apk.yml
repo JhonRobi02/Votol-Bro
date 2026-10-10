@@ -21,8 +21,13 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Generate missing Android platform files
-        run: flutter create --platforms=android --project-name votol_config --org com.jhonrobi.votol .
+      # The repository currently contains a malformed, partial Android tree.
+      # Regenerate the platform from scratch so Flutter does not preserve it.
+      - name: Regenerate clean Android platform
+        run: |
+          rm -rf android
+          rm -rf lib/android
+          flutter create --platforms=android --project-name votol_config --org com.jhonrobi.votol .
 
       - name: Enable Android USB host support
         run: |
@@ -41,6 +46,9 @@ jobs:
 
       - name: Analyze Dart code
         run: flutter analyze
+
+      - name: Run tests
+        run: flutter test
 
       - name: Build debug APK
         run: flutter build apk --debug
